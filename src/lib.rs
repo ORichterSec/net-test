@@ -8,7 +8,7 @@ pub mod service{
             write!(f, "custom error")
         }
     }
-    static TIME_OUT: u64 = 60;
+    static TIME_OUT: u64 = 3600;
     use std::{
         net::{UdpSocket, TcpListener, TcpStream, IpAddr, SocketAddr},
         io::{prelude::*},
@@ -16,6 +16,7 @@ pub mod service{
         error::Error,
         str,
     };
+    use configparser::ini::Ini;
 
     #[derive(Debug)]
     pub enum Protocoll{
@@ -30,6 +31,7 @@ pub mod service{
         }
     }
 
+    #[derive(Debug)]
     pub struct Config{
         address: IpAddr,
         port: u16,
@@ -38,29 +40,53 @@ pub mod service{
 
     impl Config{
 
+        fn from_file(path: &String) -> Config{
+            let section = "default";
+            let mut config = Ini::new();
+            config.load(path).expect("Error while loading file");
+            let address = config.get(section, "address").unwrap();
+            let port = config.get(section, "port").unwrap();
+            let protocoll = config.get(section, "protocoll").unwrap();
+            Config::parse_string_triple(&address, &port, &protocoll)
+        }
+
+        fn parse_string_triple(address: &String, port: &String, protocoll: &String) -> Config {
+            let address: IpAddr = address.clone().parse().unwrap_or_else( |_| panic!("invalid value for ip address '{}'", address));
+            let port = port.clone().parse().unwrap_or_else( |_| panic!("invalid value for port '{}'", port));
+            let protocoll =
+                match protocoll.as_str() {
+                    "tcp" => Protocoll::TCP,
+                    "udp" => Protocoll::UDP,
+                    _ => Protocoll::None,
+                };
+            Config { address, port, protocoll }
+        }
+
         pub fn new(args: &[String]) -> Config {
+
+            //try to read from file if we pass -f flag as first arg
+            if args.len() >= 3{
+                if args[1] == "-f" {
+                    return Config::from_file(&args[2]);
+                }
+            }
+
             if args.len() < 3 {
                 panic!("not enough arguments");
             }
-            let address: IpAddr = args[1].clone().parse().unwrap_or_else( |_| panic!("invalid value for ip address '{}'", args[1]));
-            let port = args[2].clone().parse().unwrap_or_else( |_| panic!("invalid value for port '{}'", args[2]));
-            let protocoll = 
-                if args.len() == 4{
-                    match args[3].as_str(){
-                        "tcp" => Protocoll::TCP,
-                        "udp" => Protocoll::UDP,
-                        _ => Protocoll::None,
-                    }
-                }else{
-                    Protocoll::None
-                };
-            Config { address, port, protocoll }
+            let addr = &args[1];
+            let port = &args[2];
+            if args.len() == 4{
+                Config::parse_string_triple(addr, port, &args[3].to_string())
+            }else{
+                Config::parse_string_triple(addr, port, &"".to_string())
+            }
+            
         }
 
     }
 
     fn sent_answer(mut stream: TcpStream) -> Result<String, Box<dyn Error>>{
-        println!("inside sent_answer");
         let mut read_size;
         let mut write_size = 0;
         loop{
@@ -69,40 +95,85 @@ pub mod service{
             read_size =  stream.read(&mut buf)?;
             println!("content of buf:{}", str::from_utf8(&buf).unwrap());
 
+            let output = format!("got {} bytes from tcp stream wrote {} bytes", read_size, write_size);
+            println!("{}",output);
             if read_size == 0 {
                 break;
             }
             write_size = stream.write(&buf)?;
         }
-        let output = format!("got {} bytes from tcp stream wrote {} bytes", read_size, write_size);
-        Ok(output)
+        Ok(format!("sent answer of {} bytes", write_size))
     }
-
+    
     fn start_tcp_listener(socket: SocketAddr, timeout: Option<u64>) -> Result<String, Box<dyn Error>> {
-        println!("called start_tcp_listener");
-        let listener = TcpListener::bind(socket)?;
         let start = time::Instant::now();
-        for stream in listener.incoming() {
-            let stream = stream?;
-            println!("inside for loop");
+        let listener = TcpListener::bind(socket)?;
+        loop{
+            let (stream, _) = listener.accept()?;
             sent_answer(stream)?;
             let quit =
-                match timeout{
+                match timeout {
                     Some(value) => start.elapsed().as_secs() > value,
                     None => false,
                 };
             if quit{
                 break;
+            }else{
+                continue;
             }
         }
-
+        
         let output = match timeout {
             Some(value) => value.to_string(),
             None => String::from("THIS SHOULD NOT HAVE BEEN PRINTED. REPLACE THIS WITH PANIC!/UNWRAP() LATER."),
         };
-        Ok(format!("closed UDPListener after {}",output))
+        Ok(format!("closed TCPListener after {} seconds (timeout)",output))
     }
 
+    // fn ready_to_answer(socket: SocketAddr) -> Result<String, Box<dyn Error>>{
+    //     let listener = TcpListener::bind(socket)?;
+    //     for stream in listener.incoming() {
+    //         let stream = stream?;
+    //         sent_answer(stream)?;
+    //     }
+    //     Ok(String::from("pass"))
+    // }
+
+    // fn start_tcp_listener(socket: SocketAddr, timeout: Option<u64>) -> Result<String, Box<dyn Error>> {
+    //     let start = time::Instant::now();
+    //     // loop{
+    //     // let stream = listener.accept();
+    //     let(tx, rx) = mpsc::channel();
+
+        
+    //     let join = thread::spawn(move || tx.send(ready_to_answer(socket).unwrap()));
+    //     let recieved = rx.try_recv();
+    //     match recieved {
+    //         Ok(value) => println!("Recieved from worker:{}", value),
+    //         Err(error_str) => println!("Error while trying to receive: {}", error_str),
+    //     }
+        
+    //     loop{
+    //         thread::sleep(std::time::Duration::new(1, 0));
+    //         let quit =
+    //             match timeout {
+    //                 Some(value) => start.elapsed().as_secs() > value,
+    //                 None => false,
+    //             };
+    //         if quit{
+    //             break;
+    //         }else{
+    //             continue;
+    //         }
+    //     }
+
+    //     let output = match timeout {
+    //         Some(value) => value.to_string(),
+    //         None => String::from("THIS SHOULD NOT HAVE BEEN PRINTED. REPLACE THIS WITH PANIC!/UNWRAP() LATER."),
+    //     };
+    //     Ok(format!("closed TCPListener after {}",output))
+    // }
+    
     fn start_upd_listener(socket: SocketAddr, timeout: Option<u64>) -> Result<String, Box<dyn Error>> {
         let socket = UdpSocket::bind(socket)?;
         // Receives a single datagram message on the socket. If `buf` is too small to hold
@@ -120,7 +191,7 @@ pub mod service{
             println!("{:?} bytes sent", len);
 
             let quit =
-                match timeout{
+                match timeout {
                     Some(value) => start.elapsed().as_secs() > value,
                     None => false,
                 };
@@ -134,7 +205,7 @@ pub mod service{
             Some(value) => value.to_string(),
             None => String::from("THIS SHOULD NOT HAVE BEEN PRINTED. REPLACE THIS WITH PANIC!/UNWRAP() LATER."),
         };
-        Ok(format!("closed UDPListener after {}",output))
+        Ok(format!("closed UDPListener after {} seconds (timeout)",output))
         // the socket is closed here
     }
 
